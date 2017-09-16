@@ -1,21 +1,16 @@
 postgres:
     dialect: postgres
-    datasource: dbname=test sslmode=disable
+    datasource: host=postgres dbname=test sslmode=disable user=postgres password=coolpasswordkid
     dir: test-migrations
 
 mysql:
     dialect: mysql
-    datasource: root@/test?parseTime=true
+    datasource: root:coolpasswordkid@mysql/test?parseTime=true
     dir: test-migrations
 
 mysql_noflag:
     dialect: mysql
-    datasource: root@/test
-    dir: test-migrations
-
-mysql_env:
-    dialect: mysql
-    datasource: ${MYSQL_USER}@/$DATABASE?parseTime=true
+    datasource: root:coolpasswordkid@mysql/test
     dir: test-migrations
 
 sqlite:

@@ -1,7 +1,4 @@
-#!/bin/bash
-
-# Tweak PATH for Travis
-export PATH=$PATH:$HOME/gopath/bin
+#!/bin/sh
 
 OPTIONS="-config=test-integration/dbconfig.yml -env mysql"
 
