@@ -269,6 +269,20 @@ Both `Asset` and `AssetDir` are functions provided by bindata.
 
 Then proceed as usual.
 
+## Docker
+
+Building a docker image from this repo is fairly straightforward. This assumes docker is fine on your machine.
+```sh
+docker build -t sql-migrate .
+```
+
+Now you can run the application easily as follows:
+```
+docker run sql-migrate
+```
+
+This is admittedly most useful in environments already using containers :-)
+
 ## Extending
 
 Adding a new migration source means implementing `MigrationSource`.
