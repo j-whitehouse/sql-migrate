@@ -278,6 +278,7 @@ func ParseMigration(id string, r io.ReadSeeker) (*Migration, error) {
 
 type SqlExecutor interface {
 	Exec(query string, args ...interface{}) (sql.Result, error)
+	SelectInt(query string, args ...interface{}) (int64, error)
 	Insert(list ...interface{}) error
 	Delete(list ...interface{}) (int64, error)
 }
@@ -329,14 +330,15 @@ func ExecMax(db *sql.DB, dialect string, m MigrationSource, dir MigrationDirecti
 
 			if stmt.Loop {
 				// Attempt to execute, rollback on failure
-				loopCond := 1
-				if loopCond > 0 {
+				loopCond := int64(1) // Must be compatible with SelectInt multiple return value
+				for loopCond > 0 {
 					if _, err := executor.Exec(stmt.Statement); err != nil {
 						// Cannot rollback, loops unset single transaction mode
 						return applied, newTxError(migration, err)
 					}
 					// Grab new result of conditional
-					if loopCond, err := executor.Exec(stmt.Conditional); err != nil {
+					// dbMap.SelectRow
+					if loopCond, err = executor.SelectInt(stmt.Conditional); err != nil {
 						return applied, newTxError(migration, err)
 					}
 				}
@@ -507,6 +509,7 @@ func GetMigrationRecords(db *sql.DB, dialect string) ([]*MigrationRecord, error)
 		return nil, err
 	}
 
+	// TODO: Flyway compatible columns
 	var records []*MigrationRecord
 	query := fmt.Sprintf("SELECT * FROM %s ORDER BY id ASC", dbMap.Dialect.QuotedTableForQuery(schemaName, tableName))
 	_, err = dbMap.Select(&records, query)

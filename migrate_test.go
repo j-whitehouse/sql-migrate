@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/j-whitehouse/sql-migrate/sqlparse"
 	_ "github.com/mattn/go-sqlite3"
 	. "gopkg.in/check.v1"
 	"gopkg.in/gorp.v1"
@@ -15,13 +16,33 @@ var testDatabaseFile *os.File
 var sqliteMigrations = []*Migration{
 	&Migration{
 		Id:   "123",
-		Up:   []string{"CREATE TABLE people (id int)"},
-		Down: []string{"DROP TABLE people"},
+		Up:   []sqlparse.MigrationStatement{{Statement: "CREATE TABLE people (id int)", Loop: false, Conditional: ""}},
+		Down: []sqlparse.MigrationStatement{{Statement: "DROP TABLE people", Loop: false, Conditional: ""}},
 	},
 	&Migration{
 		Id:   "124",
-		Up:   []string{"ALTER TABLE people ADD COLUMN first_name text"},
-		Down: []string{"SELECT 0"}, // Not really supported
+		Up:   []sqlparse.MigrationStatement{{Statement: "ALTER TABLE people ADD COLUMN first_name text", Loop: false, Conditional: ""}},
+		Down: []sqlparse.MigrationStatement{{Statement: "SELECT 0", Loop: false, Conditional: ""}}, // Not really supported
+	},
+}
+
+var loopMigrations = []*Migration{
+	&Migration{
+		Id:   "123",
+		Up:   []sqlparse.MigrationStatement{{Statement: "CREATE TABLE people (id int)", Loop: false, Conditional: ""}},
+		Down: []sqlparse.MigrationStatement{{Statement: "DROP TABLE people", Loop: false, Conditional: ""}},
+	},
+	&Migration{
+		Id:   "124",
+		Up:   []sqlparse.MigrationStatement{{Statement: "INSERT INTO people (id) VALUES (5), (6), (7)", Loop: false, Conditional: ""}},
+		Down: []sqlparse.MigrationStatement{{Statement: "SELECT 0", Loop: false, Conditional: ""}}, // Not going to roll back DML
+	},
+	&Migration{
+		Id: "125",
+		Up: []sqlparse.MigrationStatement{
+			{Statement: "ALTER TABLE people ADD COLUMN first_name text", Loop: false, Conditional: ""},
+			{Statement: "UPDATE people SET first_name = 'Jim Bob' WHERE first_name IS NULL", Loop: true, Conditional: "SELECT COUNT(*) FROM people WHERE first_name IS NULL"}},
+		Down: []sqlparse.MigrationStatement{{Statement: "ALTER TABLE people DROP COLUMN first_name", Loop: false, Conditional: ""}},
 	},
 }
 
@@ -117,6 +138,24 @@ func (s *SqliteMigrateSuite) TestMigrateIncremental(c *C) {
 	// Can use column now
 	_, err = s.DbMap.Exec("SELECT first_name FROM people")
 	c.Assert(err, IsNil)
+}
+
+func (s *SqliteMigrateSuite) TestMigrateLoop(c *C) {
+	migrations := &MemoryMigrationSource{
+		Migrations: loopMigrations,
+	}
+	// Executes all migrations
+	n, err := Exec(s.Db, "sqlite3", migrations, Up)
+	c.Assert(err, IsNil)
+	c.Assert(n, Equals, 3)
+
+	// Can use column now
+	_, err = s.DbMap.Exec("SELECT first_name FROM people")
+	c.Assert(err, IsNil)
+
+	// Columns filled
+	count, err := s.DbMap.SelectInt("SELECT COUNT(first_name) FROM people WHERE first_name IS NOT NULL")
+	c.Assert(count, Equals, int64(3))
 }
 
 func (s *SqliteMigrateSuite) TestFileMigrate(c *C) {
@@ -258,9 +297,11 @@ func (s *SqliteMigrateSuite) TestMigrateTransaction(c *C) {
 			sqliteMigrations[0],
 			sqliteMigrations[1],
 			&Migration{
-				Id:   "125",
-				Up:   []string{"INSERT INTO people (id, first_name) VALUES (1, 'Test')", "SELECT fail"},
-				Down: []string{}, // Not important here
+				Id: "125",
+				Up: []sqlparse.MigrationStatement{
+					{Statement: "INSERT INTO people (id, first_name) VALUES (1, 'Test')", Loop: false, Conditional: ""},
+					{Statement: "SELECT fail", Loop: false, Conditional: ""}},
+				Down: []sqlparse.MigrationStatement{}, // Not important here
 			},
 		},
 	}
@@ -281,18 +322,18 @@ func (s *SqliteMigrateSuite) TestPlanMigration(c *C) {
 		Migrations: []*Migration{
 			&Migration{
 				Id:   "1_create_table.sql",
-				Up:   []string{"CREATE TABLE people (id int)"},
-				Down: []string{"DROP TABLE people"},
+				Up:   []sqlparse.MigrationStatement{{Statement: "CREATE TABLE people (id int)", Loop: false, Conditional: ""}},
+				Down: []sqlparse.MigrationStatement{{Statement: "DROP TABLE people", Loop: false, Conditional: ""}},
 			},
 			&Migration{
 				Id:   "2_alter_table.sql",
-				Up:   []string{"ALTER TABLE people ADD COLUMN first_name text"},
-				Down: []string{"SELECT 0"}, // Not really supported
+				Up:   []sqlparse.MigrationStatement{{Statement: "ALTER TABLE people ADD COLUMN first_name text", Loop: false, Conditional: ""}},
+				Down: []sqlparse.MigrationStatement{{Statement: "SELECT 0", Loop: false, Conditional: ""}}, // Not really supported
 			},
 			&Migration{
 				Id:   "10_add_last_name.sql",
-				Up:   []string{"ALTER TABLE people ADD COLUMN last_name text"},
-				Down: []string{"ALTER TABLE people DROP COLUMN last_name"},
+				Up:   []sqlparse.MigrationStatement{{Statement: "ALTER TABLE people ADD COLUMN last_name text", Loop: false, Conditional: ""}},
+				Down: []sqlparse.MigrationStatement{{Statement: "ALTER TABLE people DROP COLUMN last_name", Loop: false, Conditional: ""}},
 			},
 		},
 	}
@@ -302,8 +343,8 @@ func (s *SqliteMigrateSuite) TestPlanMigration(c *C) {
 
 	migrations.Migrations = append(migrations.Migrations, &Migration{
 		Id:   "11_add_middle_name.sql",
-		Up:   []string{"ALTER TABLE people ADD COLUMN middle_name text"},
-		Down: []string{"ALTER TABLE people DROP COLUMN middle_name"},
+		Up:   []sqlparse.MigrationStatement{{Statement: "ALTER TABLE people ADD COLUMN middle_name text", Loop: false, Conditional: ""}},
+		Down: []sqlparse.MigrationStatement{{Statement: "ALTER TABLE people DROP COLUMN middle_name", Loop: false, Conditional: ""}},
 	})
 
 	plannedMigrations, _, err := PlanMigration(s.Db, "sqlite3", migrations, Up, 0)
@@ -320,19 +361,19 @@ func (s *SqliteMigrateSuite) TestPlanMigration(c *C) {
 }
 
 func (s *SqliteMigrateSuite) TestPlanMigrationWithHoles(c *C) {
-	up := "SELECT 0"
-	down := "SELECT 1"
+	up := sqlparse.MigrationStatement{Statement: "SELECT 0", Loop: false, Conditional: ""}
+	down := sqlparse.MigrationStatement{Statement: "SELECT 1", Loop: false, Conditional: ""}
 	migrations := &MemoryMigrationSource{
 		Migrations: []*Migration{
 			&Migration{
 				Id:   "1",
-				Up:   []string{up},
-				Down: []string{down},
+				Up:   []sqlparse.MigrationStatement{up},
+				Down: []sqlparse.MigrationStatement{down},
 			},
 			&Migration{
 				Id:   "3",
-				Up:   []string{up},
-				Down: []string{down},
+				Up:   []sqlparse.MigrationStatement{up},
+				Down: []sqlparse.MigrationStatement{down},
 			},
 		},
 	}
@@ -342,20 +383,20 @@ func (s *SqliteMigrateSuite) TestPlanMigrationWithHoles(c *C) {
 
 	migrations.Migrations = append(migrations.Migrations, &Migration{
 		Id:   "2",
-		Up:   []string{up},
-		Down: []string{down},
+		Up:   []sqlparse.MigrationStatement{up},
+		Down: []sqlparse.MigrationStatement{down},
 	})
 
 	migrations.Migrations = append(migrations.Migrations, &Migration{
 		Id:   "4",
-		Up:   []string{up},
-		Down: []string{down},
+		Up:   []sqlparse.MigrationStatement{up},
+		Down: []sqlparse.MigrationStatement{down},
 	})
 
 	migrations.Migrations = append(migrations.Migrations, &Migration{
 		Id:   "5",
-		Up:   []string{up},
-		Down: []string{down},
+		Up:   []sqlparse.MigrationStatement{up},
+		Down: []sqlparse.MigrationStatement{down},
 	})
 
 	// apply all the missing migrations
