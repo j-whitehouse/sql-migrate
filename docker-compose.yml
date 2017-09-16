@@ -1,0 +1,16 @@
+tests:
+  build: .
+  dockerfile: Dockerfile.test
+  links:
+    - postgres
+    - mysql
+postgres:
+  image: postgres:9.6
+  environment:
+    - POSTGRES_PASSWORD=coolpasswordkid
+    - POSTGRES_DB=test
+mysql:
+  image: mysql:5.6
+  environment:
+    - MYSQL_DATABASE=test
+    - MYSQL_ROOT_PASSWORD=coolpasswordkid

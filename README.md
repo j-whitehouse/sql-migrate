@@ -283,6 +283,25 @@ docker run sql-migrate
 
 This is admittedly most useful in environments already using containers :-)
 
+## Docker Compose CI
+
+A separate docker test image is included along with a docker-compose script for full CI.
+This docker-compose set up can be compiled with the following command:
+```sh
+docker-compose -f ./docker-compose.yml -p ci build
+```
+This runs a full rebuilt as it doesn't share a base image with the normal docker image. The normal docker image is 
+a smaller Alpine Linux based build, whereas the test image uses sqlite3 for some tests local to the image
+
+Once it is built, the tests can be run directly with the following command. If you do not have them, 
+this command will download the mysql & postgres official Docker images as part of the CI system:
+```sh
+docker-compose -p ci run tests
+```
+
+After a successfull run, the final message printed should be "CI Tests Ran Successfully". Containers should 
+quit on their own as well.
+
 ## Extending
 
 Adding a new migration source means implementing `MigrationSource`.
