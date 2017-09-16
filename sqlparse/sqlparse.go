@@ -15,9 +15,20 @@ const (
 	optionNoTransaction = "notransaction"
 )
 
+type migrationStatement struct {
+	Statement   string
+	Loop        bool
+	Conditional string
+}
+
 type ParsedMigration struct {
-	UpStatements   []string
-	DownStatements []string
+	// TODO: Alter this data structure
+	// This is the core concern for looping backfills
+	// Said backfills require running a line until completion & can't easily be prepresented as a string
+	// Unless I were to parse that string, but then there's keyword/namespace danger
+	// This needs a simple "statement" string, a "loop" flag and a loop "clause" string at least
+	UpStatements   []migrationStatement
+	DownStatements []migrationStatement
 
 	DisableTransactionUp   bool
 	DisableTransactionDown bool
@@ -103,7 +114,8 @@ func parseCommand(line string) (*migrateCommand, error) {
 	return cmd, nil
 }
 
-// Split the given sql script into individual statements.
+// ParseMigration will split the given sql script into individual statements.
+// This is where the extended vocabulary of the migrations is defined
 //
 // The base case is to simply split on semicolons, as these
 // naturally terminate a statement.
@@ -125,7 +137,9 @@ func ParseMigration(r io.ReadSeeker) (*ParsedMigration, error) {
 
 	statementEnded := false
 	ignoreSemicolons := false
-	currentDirection := directionNone
+	currentDirection := directionUp // For flyway script compatibility :-(
+	isLoop := false
+	isConditional := false
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -174,6 +188,35 @@ func ParseMigration(r io.ReadSeeker) (*ParsedMigration, error) {
 					ignoreSemicolons = false
 				}
 				break
+
+			case "ConditionalBegin":
+				if !isLoop {
+					return nil, errors.New("ERROR: saw '-- +migration ConditionalBegin' outside of matching '-- +migrate LoopBegin'")
+				}
+				isConditional = true
+			case "ConditionalEnd":
+				isConditional = false
+			case "LoopBegin":
+				isLoop = true
+				if currentDirection != directionNone {
+					if currentDirection == directionUp {
+						p.DisableTransactionUp = true
+					} else if currentDirection == directionDown {
+						p.DisableTransactionDown = true
+					}
+					ignoreSemicolons = true
+				}
+
+				break
+			case "LoopEnd":
+				if isConditional {
+					return nil, errors.New("ERROR: saw '-- +migrate ConditionalBegin' with no matching '-- +migrate ConditionalEnd' in its loop")
+				}
+				isLoop = false
+				if currentDirection != directionNone {
+					ignoreSemicolons = false
+				}
+				break
 			}
 		}
 
@@ -192,14 +235,22 @@ func ParseMigration(r io.ReadSeeker) (*ParsedMigration, error) {
 		// Wrap up the two supported cases: 1) basic with semicolon; 2) psql statement
 		// Lines that end with semicolon that are in a statement block
 		// do not conclude statement.
+		// TODO: rewrite this whole dang thing with the new type's logic
+		/* Conditional statement block must exist as one-per-loop, and be a single query
+		That query must return 0 for finished and and int > 0 for not-finished
+		Loop is any SQL statements outside the conditional block (conditional can sit anywhere)
+		The Loop & Conditional need to be part of the same migrationStatement
+		*/
 		if (!ignoreSemicolons && (endsWithSemicolon(line) || isLineSeparator)) || statementEnded {
 			statementEnded = false
 			switch currentDirection {
 			case directionUp:
-				p.UpStatements = append(p.UpStatements, buf.String())
+				newStatement := migrationStatement{buf.String(), false, ""}
+				p.UpStatements = append(p.UpStatements, newStatement)
 
 			case directionDown:
-				p.DownStatements = append(p.DownStatements, buf.String())
+				newStatement := migrationStatement{buf.String(), false, ""}
+				p.DownStatements = append(p.DownStatements, newStatement)
 
 			default:
 				panic("impossible state")
@@ -217,6 +268,8 @@ func ParseMigration(r io.ReadSeeker) (*ParsedMigration, error) {
 	if ignoreSemicolons {
 		return nil, errors.New("ERROR: saw '-- +migrate StatementBegin' with no matching '-- +migrate StatementEnd'")
 	}
+
+	// TODO: validate no unclosed loop
 
 	if currentDirection == directionNone {
 		return nil, errors.New(`ERROR: no Up/Down annotations found, so no statements were executed.

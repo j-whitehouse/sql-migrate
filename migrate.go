@@ -116,6 +116,8 @@ func (b byId) Len() int           { return len(b) }
 func (b byId) Swap(i, j int)      { b[i], b[j] = b[j], b[i] }
 func (b byId) Less(i, j int) bool { return b[i].Less(b[j]) }
 
+// MigrationRecord stores each migration Id & Applied timestamp
+// TODO: Change to Flyway compatible table structure if compatibility selected
 type MigrationRecord struct {
 	Id        string    `db:"id"`
 	AppliedAt time.Time `db:"applied_at"`
@@ -311,6 +313,9 @@ func ExecMax(db *sql.DB, dialect string, m MigrationSource, dir MigrationDirecti
 			}
 		}
 
+		// TODO: Add support for looping case
+		// TODO: Support the migrationStatement type
+		// TODO: Add validation check for looping case with conditional
 		for _, stmt := range migration.Queries {
 			if _, err := executor.Exec(stmt); err != nil {
 				if trans, ok := executor.(*gorp.Transaction); ok {
@@ -501,6 +506,7 @@ func getMigrationDbMap(db *sql.DB, dialect string) (*gorp.DbMap, error) {
 		return nil, fmt.Errorf("Unknown dialect: %s", dialect)
 	}
 
+	// TODO: Change to Flyway compatible table name if compatibility selected
 	// When using the mysql driver, make sure that the parseTime option is
 	// configured, otherwise it won't map time columns to time.Time. See
 	// https://github.com/j-whitehouse/sql-migrate/issues/2
