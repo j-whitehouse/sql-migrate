@@ -15,7 +15,7 @@ const (
 	optionNoTransaction = "notransaction"
 )
 
-type migrationStatement struct {
+type MigrationStatement struct {
 	Statement   string
 	Loop        bool
 	Conditional string
@@ -23,8 +23,8 @@ type migrationStatement struct {
 
 type ParsedMigration struct {
 	// Statements need a simple "Statement" string, a "Loop" flag and a loop "Conditional" string
-	UpStatements   []migrationStatement
-	DownStatements []migrationStatement
+	UpStatements   []MigrationStatement
+	DownStatements []MigrationStatement
 
 	DisableTransactionUp   bool
 	DisableTransactionDown bool
@@ -128,7 +128,7 @@ func ParseMigration(r io.ReadSeeker) (*ParsedMigration, error) {
 		return nil, err
 	}
 
-	// new migrationStatement type requires both
+	// new MigrationStatement type requires both
 	var statementBuf bytes.Buffer
 	var conditionalBuf bytes.Buffer
 	scanner := bufio.NewScanner(r)
@@ -266,17 +266,17 @@ func ParseMigration(r io.ReadSeeker) (*ParsedMigration, error) {
 		/* Conditional statement block must exist as one-per-loop, and be a single query
 		That query must return 0 for finished and and int > 0 for not-finished
 		Loop is any SQL statements outside the conditional block (conditional can sit anywhere)
-		The Loop & Conditional need to be part of the same migrationStatement
+		The Loop & Conditional need to be part of the same MigrationStatement
 		*/
 		if (!ignoreSemicolons && (endsWithSemicolon(line) || isLineSeparator)) || statementEnded {
 			statementEnded = false
 			switch currentDirection {
 			case directionUp:
-				newStatement := migrationStatement{statementBuf.String(), isLoop, conditionalBuf.String()}
+				newStatement := MigrationStatement{statementBuf.String(), isLoop, conditionalBuf.String()}
 				p.UpStatements = append(p.UpStatements, newStatement)
 
 			case directionDown:
-				newStatement := migrationStatement{statementBuf.String(), isLoop, conditionalBuf.String()}
+				newStatement := MigrationStatement{statementBuf.String(), isLoop, conditionalBuf.String()}
 				p.DownStatements = append(p.DownStatements, newStatement)
 
 			default:

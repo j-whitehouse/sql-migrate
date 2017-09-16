@@ -64,10 +64,11 @@ func SetSchema(name string) {
 	}
 }
 
+// Migration contains all parsed queries, its ID & whether to run as a single commit
 type Migration struct {
 	Id   string
-	Up   []string
-	Down []string
+	Up   []sqlparse.MigrationStatement
+	Down []sqlparse.MigrationStatement
 
 	DisableTransactionUp   bool
 	DisableTransactionDown bool
@@ -107,7 +108,7 @@ type PlannedMigration struct {
 	*Migration
 
 	DisableTransaction bool
-	Queries            []string
+	Queries            []sqlparse.MigrationStatement
 }
 
 type byId []*Migration
@@ -313,16 +314,32 @@ func ExecMax(db *sql.DB, dialect string, m MigrationSource, dir MigrationDirecti
 			}
 		}
 
-		// TODO: Add support for looping case
-		// TODO: Support the migrationStatement type
-		// TODO: Add validation check for looping case with conditional
 		for _, stmt := range migration.Queries {
-			if _, err := executor.Exec(stmt); err != nil {
-				if trans, ok := executor.(*gorp.Transaction); ok {
-					trans.Rollback()
-				}
+			if !stmt.Loop {
+				// Attempt to execute, rollback on failure
+				if _, err := executor.Exec(stmt.Statement); err != nil {
+					// Only can rollback if in transaction
+					if trans, ok := executor.(*gorp.Transaction); ok {
+						trans.Rollback()
+					}
 
-				return applied, newTxError(migration, err)
+					return applied, newTxError(migration, err)
+				}
+			}
+
+			if stmt.Loop {
+				// Attempt to execute, rollback on failure
+				loopCond := 1
+				if loopCond > 0 {
+					if _, err := executor.Exec(stmt.Statement); err != nil {
+						// Cannot rollback, loops unset single transaction mode
+						return applied, newTxError(migration, err)
+					}
+					// Grab new result of conditional
+					if loopCond, err := executor.Exec(stmt.Conditional); err != nil {
+						return applied, newTxError(migration, err)
+					}
+				}
 			}
 		}
 
@@ -538,5 +555,3 @@ Check https://github.com/go-sql-driver/mysql#parsetime for more info.`)
 
 	return dbMap, nil
 }
-
-// TODO: Run migration + record insert in transaction.
