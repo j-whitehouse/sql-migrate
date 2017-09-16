@@ -1,7 +1,4 @@
-#!/bin/bash
-
-# Tweak PATH for Travis
-export PATH=$PATH:$HOME/gopath/bin
+#!/bin/sh
 
 export MYSQL_USER=root
 export DATABASE=test_env
