@@ -204,6 +204,31 @@ DROP FUNCTION do_something();
 DROP TABLE people;
 ```
 
+You can also create conditional loops to perform large data backfills in chunks, to avoid blocking issues on the database. These 
+are defined by `LoopBegin`/`LoopEnd` and nested within that `ConditionalBegin`/`ConditionalEnd` blocks. Statements cannot be placed
+inside of loops. These loops also disable transaction safety, and so should usually be in their own stage/file.
+
+The conditional is optimized for count(*) type queries, it exists out whenever the statement's return value is '0'. Any other
+value will continue the loop. Other conditional statements can easily be used, so long as they conform to returning integers
+greater than 0 for a continue status and 0 for end.
+
+Here is an example usage of loops for a data backfill, in practice there would be limits on the UPDATE statement to avoid updating
+the entire table at once:
+```sql
+-- +migrate Up
+-- Usually the alter statements should be separated
+ALTER TABLE people ADD COLUMN first_name text;
+-- +LoopBegin
+UPDATE people SET first_name = 'Jim Bob' WHERE first_name IS NULL;
+-- +ConditionalBegin
+SELECT COUNT(*) FROM people WHERE first_name IS NULL;
+-- +ConditionalEnd
+-- +LoopEnd
+
+-- +migrate Down
+ALTER TABLE people DROP COLUMN first_name;
+```
+
 The order in which migrations are applied is defined through the filename: sql-migrate will sort migrations based on their name. It's recommended to use an increasing version number or a timestamp as the first part of the filename.
 
 Normally each migration is run within a transaction in order to guarantee that it is fully atomic. However some SQL commands (for example creating an index concurrently in PostgreSQL) cannot be executed inside a transaction. In order to execute such a command in a migration, the migration can be run using the `notransaction` option:

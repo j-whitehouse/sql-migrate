@@ -64,10 +64,11 @@ func SetSchema(name string) {
 	}
 }
 
+// Migration contains all parsed queries, its ID & whether to run as a single commit
 type Migration struct {
 	Id   string
-	Up   []string
-	Down []string
+	Up   []sqlparse.MigrationStatement
+	Down []sqlparse.MigrationStatement
 
 	DisableTransactionUp   bool
 	DisableTransactionDown bool
@@ -107,7 +108,7 @@ type PlannedMigration struct {
 	*Migration
 
 	DisableTransaction bool
-	Queries            []string
+	Queries            []sqlparse.MigrationStatement
 }
 
 type byId []*Migration
@@ -116,6 +117,8 @@ func (b byId) Len() int           { return len(b) }
 func (b byId) Swap(i, j int)      { b[i], b[j] = b[j], b[i] }
 func (b byId) Less(i, j int) bool { return b[i].Less(b[j]) }
 
+// MigrationRecord stores each migration Id & Applied timestamp
+// TODO: Change to Flyway compatible table structure if compatibility selected
 type MigrationRecord struct {
 	Id        string    `db:"id"`
 	AppliedAt time.Time `db:"applied_at"`
@@ -275,6 +278,7 @@ func ParseMigration(id string, r io.ReadSeeker) (*Migration, error) {
 
 type SqlExecutor interface {
 	Exec(query string, args ...interface{}) (sql.Result, error)
+	SelectInt(query string, args ...interface{}) (int64, error)
 	Insert(list ...interface{}) error
 	Delete(list ...interface{}) (int64, error)
 }
@@ -312,12 +316,32 @@ func ExecMax(db *sql.DB, dialect string, m MigrationSource, dir MigrationDirecti
 		}
 
 		for _, stmt := range migration.Queries {
-			if _, err := executor.Exec(stmt); err != nil {
-				if trans, ok := executor.(*gorp.Transaction); ok {
-					trans.Rollback()
-				}
+			if !stmt.Loop {
+				// Attempt to execute, rollback on failure
+				if _, err := executor.Exec(stmt.Statement); err != nil {
+					// Only can rollback if in transaction
+					if trans, ok := executor.(*gorp.Transaction); ok {
+						trans.Rollback()
+					}
 
-				return applied, newTxError(migration, err)
+					return applied, newTxError(migration, err)
+				}
+			}
+
+			if stmt.Loop {
+				// Attempt to execute, rollback on failure
+				loopCond := int64(1) // Must be compatible with SelectInt multiple return value
+				for loopCond > 0 {
+					if _, err := executor.Exec(stmt.Statement); err != nil {
+						// Cannot rollback, loops unset single transaction mode
+						return applied, newTxError(migration, err)
+					}
+					// Grab new result of conditional
+					// dbMap.SelectRow
+					if loopCond, err = executor.SelectInt(stmt.Conditional); err != nil {
+						return applied, newTxError(migration, err)
+					}
+				}
 			}
 		}
 
@@ -485,6 +509,7 @@ func GetMigrationRecords(db *sql.DB, dialect string) ([]*MigrationRecord, error)
 		return nil, err
 	}
 
+	// TODO: Flyway compatible columns
 	var records []*MigrationRecord
 	query := fmt.Sprintf("SELECT * FROM %s ORDER BY id ASC", dbMap.Dialect.QuotedTableForQuery(schemaName, tableName))
 	_, err = dbMap.Select(&records, query)
@@ -501,6 +526,7 @@ func getMigrationDbMap(db *sql.DB, dialect string) (*gorp.DbMap, error) {
 		return nil, fmt.Errorf("Unknown dialect: %s", dialect)
 	}
 
+	// TODO: Change to Flyway compatible table name if compatibility selected
 	// When using the mysql driver, make sure that the parseTime option is
 	// configured, otherwise it won't map time columns to time.Time. See
 	// https://github.com/j-whitehouse/sql-migrate/issues/2
@@ -532,5 +558,3 @@ Check https://github.com/go-sql-driver/mysql#parsetime for more info.`)
 
 	return dbMap, nil
 }
-
-// TODO: Run migration + record insert in transaction.

@@ -15,9 +15,16 @@ const (
 	optionNoTransaction = "notransaction"
 )
 
+type MigrationStatement struct {
+	Statement   string
+	Loop        bool
+	Conditional string
+}
+
 type ParsedMigration struct {
-	UpStatements   []string
-	DownStatements []string
+	// Statements need a simple "Statement" string, a "Loop" flag and a loop "Conditional" string
+	UpStatements   []MigrationStatement
+	DownStatements []MigrationStatement
 
 	DisableTransactionUp   bool
 	DisableTransactionDown bool
@@ -103,7 +110,8 @@ func parseCommand(line string) (*migrateCommand, error) {
 	return cmd, nil
 }
 
-// Split the given sql script into individual statements.
+// ParseMigration will split the given sql script into individual statements.
+// This is where the extended vocabulary of the migrations is defined
 //
 // The base case is to simply split on semicolons, as these
 // naturally terminate a statement.
@@ -120,12 +128,16 @@ func ParseMigration(r io.ReadSeeker) (*ParsedMigration, error) {
 		return nil, err
 	}
 
-	var buf bytes.Buffer
+	// new MigrationStatement type requires both
+	var statementBuf bytes.Buffer
+	var conditionalBuf bytes.Buffer
 	scanner := bufio.NewScanner(r)
 
 	statementEnded := false
 	ignoreSemicolons := false
-	currentDirection := directionNone
+	currentDirection := directionUp // For flyway script compatibility :-(
+	isLoop := false
+	isConditional := false
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -143,7 +155,7 @@ func ParseMigration(r io.ReadSeeker) (*ParsedMigration, error) {
 
 			switch cmd.Command {
 			case "Up":
-				if len(strings.TrimSpace(buf.String())) > 0 {
+				if len(strings.TrimSpace(statementBuf.String())) > 0 {
 					return nil, errNoTerminator()
 				}
 				currentDirection = directionUp
@@ -153,7 +165,7 @@ func ParseMigration(r io.ReadSeeker) (*ParsedMigration, error) {
 				break
 
 			case "Down":
-				if len(strings.TrimSpace(buf.String())) > 0 {
+				if len(strings.TrimSpace(statementBuf.String())) > 0 {
 					return nil, errNoTerminator()
 				}
 				currentDirection = directionDown
@@ -163,13 +175,57 @@ func ParseMigration(r io.ReadSeeker) (*ParsedMigration, error) {
 				break
 
 			case "StatementBegin":
+				if isLoop || isConditional {
+					return nil, errors.New("ERROR: Cannot begin a statement block inside a loop or conditional block")
+				}
 				if currentDirection != directionNone {
 					ignoreSemicolons = true
 				}
 				break
 
 			case "StatementEnd":
+				if isLoop || isConditional {
+					break
+				}
 				if currentDirection != directionNone {
+					statementEnded = (ignoreSemicolons == true)
+					ignoreSemicolons = false
+				}
+				break
+
+			case "ConditionalBegin":
+				if !isLoop {
+					return nil, errors.New("ERROR: saw '-- +migration ConditionalBegin' outside of matching '-- +migrate LoopBegin'")
+				}
+				isConditional = true
+			case "ConditionalEnd":
+				// don't care if ends without beginning
+				isConditional = false
+			case "LoopBegin":
+				if ignoreSemicolons {
+					return nil, errors.New("ERROR: Cannot begin a loop inside another loop or statement block")
+				}
+				if currentDirection != directionNone {
+					isLoop = true
+					ignoreSemicolons = true // Piggy backing on same logic as statements
+					if currentDirection == directionUp {
+						p.DisableTransactionUp = true
+					} else if currentDirection == directionDown {
+						p.DisableTransactionDown = true
+					}
+				}
+
+				break
+			case "LoopEnd":
+				if isConditional {
+					return nil, errors.New("ERROR: saw '-- +migrate ConditionalBegin' with no matching '-- +migrate ConditionalEnd' inside its loop")
+				}
+				// Need to avoid _ending_ a loop outside loops as we could mess up statement blocks
+				if !isLoop {
+					break
+				}
+				if currentDirection != directionNone {
+					// Piggy backing on same logic as statements
 					statementEnded = (ignoreSemicolons == true)
 					ignoreSemicolons = false
 				}
@@ -183,29 +239,53 @@ func ParseMigration(r io.ReadSeeker) (*ParsedMigration, error) {
 
 		isLineSeparator := !ignoreSemicolons && len(LineSeparator) > 0 && line == LineSeparator
 
-		if !isLineSeparator && !strings.HasPrefix(line, "-- +") {
-			if _, err := buf.WriteString(line + "\n"); err != nil {
+		// Append additional query text to query buffer
+		// Not worried about isConditional, as only true with isLoop
+		if !isLineSeparator && !strings.HasPrefix(line, "-- +") && !isLoop {
+			if _, err := statementBuf.WriteString(line + "\n"); err != nil {
 				return nil, err
+			}
+		}
+
+		// Inside a loop need to pick query v. conditional text
+		if isLoop {
+			if isConditional {
+				if _, err := conditionalBuf.WriteString(line + "\n"); err != nil {
+					return nil, err
+				}
+			} else {
+				if _, err := statementBuf.WriteString(line + "\n"); err != nil {
+					return nil, err
+				}
 			}
 		}
 
 		// Wrap up the two supported cases: 1) basic with semicolon; 2) psql statement
 		// Lines that end with semicolon that are in a statement block
 		// do not conclude statement.
+		/* Conditional statement block must exist as one-per-loop, and be a single query
+		That query must return 0 for finished and and int > 0 for not-finished
+		Loop is any SQL statements outside the conditional block (conditional can sit anywhere)
+		The Loop & Conditional need to be part of the same MigrationStatement
+		*/
 		if (!ignoreSemicolons && (endsWithSemicolon(line) || isLineSeparator)) || statementEnded {
 			statementEnded = false
 			switch currentDirection {
 			case directionUp:
-				p.UpStatements = append(p.UpStatements, buf.String())
+				newStatement := MigrationStatement{statementBuf.String(), isLoop, conditionalBuf.String()}
+				p.UpStatements = append(p.UpStatements, newStatement)
 
 			case directionDown:
-				p.DownStatements = append(p.DownStatements, buf.String())
+				newStatement := MigrationStatement{statementBuf.String(), isLoop, conditionalBuf.String()}
+				p.DownStatements = append(p.DownStatements, newStatement)
 
 			default:
 				panic("impossible state")
 			}
 
-			buf.Reset()
+			isLoop = false
+			statementBuf.Reset()
+			conditionalBuf.Reset()
 		}
 	}
 
@@ -218,15 +298,25 @@ func ParseMigration(r io.ReadSeeker) (*ParsedMigration, error) {
 		return nil, errors.New("ERROR: saw '-- +migrate StatementBegin' with no matching '-- +migrate StatementEnd'")
 	}
 
+	// validate no unclosed loop
+	if isLoop {
+		return nil, errors.New("ERROR: saw '-- +migrate LoopBegin' with no matching '-- +migrate LoopEnd'")
+	}
+
+	// validate no unclosed conditional
+	if isConditional {
+		return nil, errors.New("ERROR: saw '-- +migrate ConditionalBegin' with no matching '-- +migrate ConditionalEnd'")
+	}
+
 	if currentDirection == directionNone {
 		return nil, errors.New(`ERROR: no Up/Down annotations found, so no statements were executed.
-			See https://github.com/j-whitehouse/sql-migrate for details.`)
+			See https://github.com/j-whitehouse/sql-migrate for details`)
 	}
 
 	// allow comment without sql instruction. Example:
 	// -- +migrate Down
 	// -- nothing to downgrade!
-	if len(strings.TrimSpace(buf.String())) > 0 && !strings.HasPrefix(buf.String(), "-- +") {
+	if len(strings.TrimSpace(statementBuf.String())) > 0 && !strings.HasPrefix(statementBuf.String(), "-- +") {
 		return nil, errNoTerminator()
 	}
 
